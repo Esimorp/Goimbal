@@ -9,6 +9,7 @@ import (
 	"github.com/Esimorp/Goimbal/apps/core"
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
+	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/golang-jwt/jwt/v5"
 	"go.uber.org/zap"
@@ -16,6 +17,13 @@ import (
 
 func init() {
 	caddy.RegisterModule(&Module{})
+	httpcaddyfile.RegisterHandlerDirective("goimbal_auth", parseCaddyfile)
+}
+
+func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
+	var m Module
+	err := m.UnmarshalCaddyfile(h.Dispenser)
+	return &m, err
 }
 
 // Module 是 Goimbal 鉴权模块
@@ -48,6 +56,8 @@ type Module struct {
 	repl     *caddy.Replacer
 	matchers caddyhttp.MatcherSet
 	engine   *core.GoimbalApp
+
+	Output string `json:"output,omitempty"`
 }
 
 func (m *Module) CaddyModule() caddy.ModuleInfo {
@@ -146,7 +156,6 @@ func (m *Module) setRole(r *http.Request, role string) {
 	}
 }
 func (m *Module) setIdentity(r *http.Request, uid, role string) {
-	// 注入 Header (发给后端 App)
 	r.Header.Set(m.UidGoimbalKey, uid)
 	r.Header.Set(m.RoleGoimbalKey, role)
 
@@ -208,8 +217,12 @@ func (m *Module) isLatestSession(uid, clientType, jti string) bool {
 
 func (m *Module) authenticate(r *http.Request) error {
 	tokenStr := m.extractToken(r)
+	m.engine.GetLogger().Info("auth_request authenticate", zap.String("token", tokenStr))
+
 	if tokenStr == "" {
 		if m.AnonymousRole != "" {
+			m.engine.GetLogger().Info("auth_request m.AnonymousRole", zap.String("AnonymousRole", m.AnonymousRole))
+
 			m.setIdentity(r, "anonymous", m.AnonymousRole)
 			return nil
 		}
@@ -288,17 +301,21 @@ func (m *Module) authenticate(r *http.Request) error {
 
 func (m *Module) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	logger := m.engine.GetLogger() // 从大脑获取统一日志句柄
-
+	logger.Info("auth_request")
 	// 1. 公共路径检查 (最快放行)
 	if m.matchers != nil && m.matchers.Match(r) {
 		// 如果是公共路径，尝试提取身份但即使失败也放行
+		logger.Info("auth_request authenticate")
 		_ = m.authenticate(r)
 		return next.ServeHTTP(w, r)
 	}
+	logger.Info("auth_request not public")
 
 	// 2. 执行核心鉴权
 	err := m.authenticate(r)
 	if err != nil {
+		logger.Info("auth_request not err != nil")
+
 		logger.Debug("auth_failed",
 			zap.String("remote_ip", r.RemoteAddr),
 			zap.String("path", r.URL.Path),

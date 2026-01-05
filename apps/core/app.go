@@ -5,13 +5,22 @@ import (
 	"net/http"
 
 	"github.com/caddyserver/caddy/v2"
+	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
+	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/nalgeon/redka"
 	"go.uber.org/zap"
+	_ "modernc.org/sqlite" // Pure Go 版本的 SQLite 驱动
 )
 
 func init() {
 	caddy.RegisterModule(&GoimbalApp{})
+	httpcaddyfile.RegisterGlobalOption("goimbal", parseGoimbalApp)
+}
+func parseGoimbalApp(d *caddyfile.Dispenser, _ any) (any, error) {
+	app := new(GoimbalApp)
+	err := app.UnmarshalCaddyfile(d)
+	return app, err
 }
 
 // GoimbalApp 是 Goimbal 的核心大脑
@@ -21,6 +30,22 @@ type GoimbalApp struct {
 
 	db     *redka.DB
 	logger *zap.Logger
+}
+
+func (ga *GoimbalApp) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
+	for d.Next() { // 消耗指令名 "goimbal"
+		for d.NextBlock(0) {
+			switch d.Val() {
+			case "db_path":
+				if !d.Args(&ga.DBPath) {
+					return d.ArgErr()
+				}
+			default:
+				return d.Errf("unknown goimbal setting: %s", d.Val())
+			}
+		}
+	}
+	return nil
 }
 
 // CaddyModule 返回模块元数据
@@ -36,11 +61,15 @@ func (ga *GoimbalApp) Provision(ctx caddy.Context) error {
 	ga.logger = ctx.Logger(ga)
 
 	if ga.DBPath == "" {
-		ga.DBPath = "goimbal.db" // 默认文件名
+		ga.DBPath = ":memory:" // 默认文件名
 	}
 
 	// 开启 Redka 引擎
-	db, err := redka.Open(ga.DBPath, nil)
+	//driver name sqlite
+	opts := &redka.Options{
+		DriverName: "sqlite",
+	}
+	db, err := redka.Open(ga.DBPath, opts)
 	if err != nil {
 		return fmt.Errorf("goimbal: failed to open storage: %v", err)
 	}
